@@ -246,3 +246,355 @@ callback 2 运行时间点4412.354262512
 关闭循环
 因为call_later内部实现就是通过call_at所以这里就不多说了。
 ```
+
+### gather的使用
+```
+gather的作用和wait类似不同的是。
+1.gather任务无法取消。
+2.返回值是一个结果列表
+3.可以按照传入参数的顺序，顺序输出。
+我们将上面的代码改为gather的方式
+
+import asyncio
+
+
+async def num(n):
+    try:
+        await asyncio.sleep(n * 0.1)
+        return n
+    except asyncio.CancelledError:
+        print(f"数字{n}被取消")
+        raise
+
+
+async def main():
+    tasks = [num(i) for i in range(10)]
+    complete = await asyncio.gather(*tasks)
+    for i in complete:
+        print("当前数字", i)
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+输出
+
+当前数字 0
+当前数字 1
+....中间部分省略
+当前数字 9
+gather通常被用来阶段性的一个操作，做完第一步才能做第二步，比如下面这样
+
+import asyncio
+
+import time
+
+
+async def step1(n, start):
+    await asyncio.sleep(n)
+    print("第一阶段完成")
+    print("此时用时", time.time() - start)
+    return n
+
+
+async def step2(n, start):
+    await asyncio.sleep(n)
+    print("第二阶段完成")
+    print("此时用时", time.time() - start)
+    return n
+
+
+async def main():
+    now = time.time()
+    result = await asyncio.gather(step1(5, now), step2(2, now))
+    for i in result:
+        print(i)
+    print("总用时", time.time() - now)
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+输出
+
+第二阶段完成
+此时用时 2.0014898777008057
+第一阶段完成
+此时用时 5.002960920333862
+5
+2
+总用时 5.003103017807007
+可以通过上面结果得到如下结论：
+1.step1和step2是并行运行的。
+2.gather会等待最耗时的那个完成之后才返回结果，耗时总时间取决于其中任务最长时间的那个。
+
+任务完成时进行处理
+
+as_complete是一个生成器，会管理指定的一个任务列表，并生成他们的结果。每个协程结束运行时一次生成一个结果。与wait一样，as_complete不能保证顺序，不过执行其他动作之前没有必要等待所以后台操作完成。
+
+import asyncio
+import time
+
+
+async def foo(n):
+    print('Waiting: ', n)
+    await asyncio.sleep(n)
+    return n
+
+
+async def main():
+    coroutine1 = foo(1)
+    coroutine2 = foo(2)
+    coroutine3 = foo(4)
+
+    tasks = [
+        asyncio.ensure_future(coroutine1),
+        asyncio.ensure_future(coroutine2),
+        asyncio.ensure_future(coroutine3)
+    ]
+    for task in asyncio.as_completed(tasks):
+        result = await task
+        print('Task ret: {}'.format(result))
+
+
+now = lambda : time.time()
+start = now()
+
+loop = asyncio.get_event_loop()
+done = loop.run_until_complete(main())
+print(now() - start)
+输出
+
+Waiting:  1
+Waiting:  2
+Waiting:  4
+Task ret: 1
+Task ret: 2
+Task ret: 4
+4.004292249679565
+```
+
+### Future
+```
+获取Futrue里的结果
+
+future表示还没有完成的工作结果。事件循环可以通过监视一个future对象的状态来指示它已经完成。future对象有几个状态：
+
+Pending
+Running
+Done
+Cancelled
+创建future的时候，task为pending，事件循环调用执行的时候当然就是running，调用完毕自然就是done，如果需要停止事件循环，就需要先把task取消，状态为cancel。
+import asyncio
+
+
+def foo(future, result):
+    print(f"此时future的状态:{future}")
+    print(f"设置future的结果:{result}")
+    future.set_result(result)
+    print(f"此时future的状态:{future}")
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        all_done = asyncio.Future()
+        loop.call_soon(foo, all_done, "Future is done!")
+        print("进入事件循环")
+        result = loop.run_until_complete(all_done)
+        print("返回结果", result)
+    finally:
+        print("关闭事件循环")
+        loop.close()
+    print("获取future的结果", all_done.result())
+输出
+
+进入事件循环
+此时future的状态:<Future pending cb=[_run_until_complete_cb() at /Library/Frameworks/Python.framework/Versions/3.6/lib/python3.6/asyncio/base_events.py:176]>
+设置future的结果:Future is done!
+此时future的状态:<Future finished result='Future is done!'>
+返回结果 Future is done!
+关闭事件循环
+获取future的结果 Future is done!
+`
+可以通过输出结果发现，调用set_result之后future对象的状态由pending变为finished
+，Future的实例all_done会保留提供给方法的结果，可以在后续使用。
+
+Future对象使用await
+
+future和协程一样可以使用await关键字获取其结果。
+
+import asyncio
+
+
+def foo(future, result):
+    print("设置结果到future", result)
+    future.set_result(result)
+
+
+async def main(loop):
+    all_done = asyncio.Future()
+    print("调用函数获取future对象")
+    loop.call_soon(foo, all_done, "the result")
+
+    result = await all_done
+    print("获取future里的结果", result)
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main(loop))
+    finally:
+        loop.close()
+Future回调
+
+Future 在完成的时候可以执行一些回调函数，回调函数按注册时的顺序进行调用:
+
+import asyncio
+import functools
+
+
+def callback(future, n):
+    print('{}: future done: {}'.format(n, future.result()))
+
+
+async def register_callbacks(all_done):
+    print('注册callback到future对象')
+    all_done.add_done_callback(functools.partial(callback, n=1))
+    all_done.add_done_callback(functools.partial(callback, n=2))
+
+
+async def main(all_done):
+    await register_callbacks(all_done)
+    print('设置future的结果')
+    all_done.set_result('the result')
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        all_done = asyncio.Future()
+        loop.run_until_complete(main(all_done))
+    finally:
+        loop.close()
+通过add_done_callback方法给funtrue任务添加回调函数，当funture执行完成的时候,就会调用回调函数。并通过参数future获取协程执行的结果。
+到此为止，我们就学会了如何在协程中调用一个普通函数并获取其结果。
+```
+
+### 并发的执行任务
+```
+任务（Task）是与事件循环交互的主要途径之一。任务可以包装协程，可以跟踪协程何时完成。任务是Future的子类，所以使用方法和future一样。协程可以等待任务，每个任务都有一个结果，在它完成之后可以获取这个结果。
+因为协程是没有状态的，我们通过使用create_task方法可以将协程包装成有状态的任务。还可以在任务运行的过程中取消任务。
+
+import asyncio
+
+
+async def child():
+    print("进入子协程")
+    return "the result"
+
+
+async def main(loop):
+    print("将协程child包装成任务")
+    task = loop.create_task(child())
+    print("通过cancel方法可以取消任务")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("取消任务抛出CancelledError异常")
+    else:
+        print("获取任务的结果", task.result())
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main(loop))
+    finally:
+        loop.close()
+输出
+
+将协程child包装成任务
+通过cancel方法可以取消任务
+取消任务抛出CancelledError异常
+如果把上面的task.cancel()注释了我们可以得到正常情况下的结果，如下。
+
+将协程child包装成任务
+通过cancel方法可以取消任务
+进入子协程
+获取任务的结果 the result
+另外出了使用loop.create_task将协程包装为任务外还可以使用asyncio.ensure_future(coroutine)建一个task。在python3.7中可以使用asyncio.create_task创建任务。
+```
+### 组合协程
+```
+一系列的协程可以通过await链式的调用，但是有的时候我们需要在一个协程里等待多个协程，比如我们在一个协程里等待1000个异步网络请求，对于访问次序有没有要求的时候，就可以使用另外的关键字wait或gather来解决了。wait可以暂停一个协程，直到后台操作完成。
+
+等待多个协程
+
+Task的使用
+
+import asyncio
+
+
+async def num(n):
+    try:
+        await asyncio.sleep(n*0.1)
+        return n
+    except asyncio.CancelledError:
+        print(f"数字{n}被取消")
+        raise
+
+
+async def main():
+    tasks = [num(i) for i in range(10)]
+    complete, pending = await asyncio.wait(tasks, timeout=0.5)
+    for i in complete:
+        print("当前数字",i.result())
+    if pending:
+        print("取消未完成的任务")
+        for p in pending:
+            p.cancel()
+
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+输出
+
+当前数字 1
+当前数字 2
+当前数字 0
+当前数字 4
+当前数字 3
+取消未完成的任务
+数字5被取消
+数字9被取消
+数字6被取消
+数字8被取消
+数字7被取消
+可以发现我们的结果并没有按照数字的顺序显示，在内部wait()使用一个set保存它创建的Task实例。因为set是无序的所以这也就是我们的任务不是顺序执行的原因。wait的返回值是一个元组，包括两个集合，分别表示已完成和未完成的任务。wait第二个参数为一个超时值
+达到这个超时时间后，未完成的任务状态变为pending，当程序退出时还有任务没有完成此时就会看到如下的错误提示。
+
+Task was destroyed but it is pending!
+task: <Task pending coro=<num() done, defined at 11.py:12> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1093e0558>()]>>
+Task was destroyed but it is pending!
+task: <Task pending coro=<num() done, defined at 11.py:12> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1093e06d8>()]>>
+Task was destroyed but it is pending!
+task: <Task pending coro=<num() done, defined at 11.py:12> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1093e0738>()]>>
+此时我们可以通过迭代调用cancel方法取消任务。也就是这段代码
+
+if pending:
+        print("取消未完成的任务")
+        for p in pending:
+            p.cancel()
+```
