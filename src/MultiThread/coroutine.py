@@ -4,7 +4,7 @@
 @ide: PyCharm
 @author: mesie
 @date: 2018/10/8 21:17
-@summary: python 协成
+@summary: python协程
 """
 
 import time
